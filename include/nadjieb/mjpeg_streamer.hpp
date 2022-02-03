@@ -205,13 +205,10 @@ class MJPEGStreamer {
                     psd.fd = payload.sd;
                     if (poll(&psd, 1, 1) > 0) {
                         if (psd.revents & (POLLNVAL | POLLERR | POLLHUP | POLLRDHUP)) {
-                            std::cout << "Socket descriptor expired!" << std::endl;
                             n = 0;
                         } else {
                             n = ::write(payload.sd, res_str.c_str(), res_str.size());
                         }
-                    } else {
-                        std::cout << "Error polling for socket!" << std::endl;
                     }
                 }
 

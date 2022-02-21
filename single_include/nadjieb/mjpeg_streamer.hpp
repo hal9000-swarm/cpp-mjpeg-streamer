@@ -37,6 +37,7 @@ SOFTWARE.
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <shared_mutex>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -46,6 +47,7 @@ SOFTWARE.
 #include <vector>
 
 // #include <nadjieb/detail/version.hpp>
+
 
 /// The major version number
 #define NADJIEB_MJPEG_STREAMER_VERSION_MAJOR 2
@@ -57,14 +59,13 @@ SOFTWARE.
 #define NADJIEB_MJPEG_STREAMER_VERSION_PATCH 0
 
 /// The complete version number
-#define NADJIEB_MJPEG_STREAMER_VERSION_CODE                                                    \
-    (NADJIEB_MJPEG_STREAMER_VERSION_MAJOR * 10000 + NADJIEB_MJPEG_STREAMER_VERSION_MINOR * 100 \
-     + NADJIEB_MJPEG_STREAMER_VERSION_PATCH)
+#define NADJIEB_MJPEG_STREAMER_VERSION_CODE (NADJIEB_MJPEG_STREAMER_VERSION_MAJOR * 10000 + NADJIEB_MJPEG_STREAMER_VERSION_MINOR * 100 + NADJIEB_MJPEG_STREAMER_VERSION_PATCH)
 
 /// Version number as string
 #define NADJIEB_MJPEG_STREAMER_VERSION_STRING "2.0.0"
 
 // #include <nadjieb/detail/http_message.hpp>
+
 
 #include <sstream>
 #include <string>
@@ -128,6 +129,8 @@ struct HTTPMessage {
 };
 }  // namespace nadjieb
 
+
+
 namespace nadjieb {
 constexpr int NUM_SEND_MUTICES = 100;
 class MJPEGStreamer {
@@ -169,7 +172,7 @@ class MJPEGStreamer {
 
     void stop() {
         if (isAlive()) {
-            std::unique_lock<std::mutex> lock(payloads_mutex_);
+            std::unique_lock<std::shared_mutex> lock(payloads_mutex_);
             master_socket_ = -1;
             condition_.notify_all();
         }
@@ -200,7 +203,7 @@ class MJPEGStreamer {
     void publish(const std::string& path, const std::string& buffer) {
         std::vector<int> clients;
         {
-            std::unique_lock<std::mutex> lock(clients_mutex_);
+            std::unique_lock<std::shared_mutex> lock(clients_mutex_);
             if ((path2clients_.find(path) == path2clients_.end())
                 || (path2clients_[path].empty())) {
                 return;
@@ -209,7 +212,7 @@ class MJPEGStreamer {
         }
 
         for (auto i : clients) {
-            std::unique_lock<std::mutex> lock(payloads_mutex_);
+            std::unique_lock<std::shared_mutex> lock(payloads_mutex_);
             payloads_.emplace(Payload{buffer, path, i});
             condition_.notify_one();
         }
@@ -218,12 +221,12 @@ class MJPEGStreamer {
     void setShutdownTarget(const std::string& target) { shutdown_target_ = target; }
 
     bool isAlive() {
-        std::unique_lock<std::mutex> lock(payloads_mutex_);
+        std::shared_lock<std::shared_mutex> lock(payloads_mutex_);
         return master_socket_ > 0;
     }
 
     bool hasClient(const std::string& path) {
-        std::unique_lock<std::mutex> lock(clients_mutex_);
+        std::shared_lock<std::shared_mutex> lock(clients_mutex_);
         return path2clients_.find(path) != path2clients_.end() && !path2clients_[path].empty();
     }
 
@@ -239,10 +242,10 @@ class MJPEGStreamer {
     std::string shutdown_target_ = "/shutdown";
 
     std::thread thread_listener_;
-    std::mutex clients_mutex_;
-    std::mutex payloads_mutex_;
+    std::shared_mutex clients_mutex_;
+    std::shared_mutex payloads_mutex_;
     std::array<std::mutex, NUM_SEND_MUTICES> send_mutices_;
-    std::condition_variable condition_;
+    std::condition_variable_any condition_;
 
     std::vector<std::thread> workers_;
     std::queue<Payload> payloads_;
@@ -254,7 +257,7 @@ class MJPEGStreamer {
                 Payload payload;
 
                 {
-                    std::unique_lock<std::mutex> lock(this->payloads_mutex_);
+                    std::unique_lock<std::shared_mutex> lock(this->payloads_mutex_);
                     this->condition_.wait(lock, [this]() {
                         return this->master_socket_ < 0 || !this->payloads_.empty();
                     });
@@ -281,7 +284,7 @@ class MJPEGStreamer {
                 }
 
                 if (n < static_cast<int>(res_str.size())) {
-                    std::unique_lock<std::mutex> lock(this->clients_mutex_);
+                    std::unique_lock<std::shared_mutex> lock(this->clients_mutex_);
                     auto& p2c = this->path2clients_[payload.path];
                     if (std::find(p2c.begin(), p2c.end(), payload.sd) != p2c.end()) {
                         p2c.erase(std::remove(p2c.begin(), p2c.end(), payload.sd), p2c.end());
@@ -347,7 +350,7 @@ class MJPEGStreamer {
                             new_socket, shutdown_res_str.c_str(), shutdown_res_str.size());
                         ::close(new_socket);
 
-                        std::unique_lock<std::mutex> lock(this->payloads_mutex_);
+                        std::unique_lock<std::shared_mutex> lock(this->payloads_mutex_);
                         this->master_socket_ = -1;
                         this->condition_.notify_all();
 
@@ -364,7 +367,7 @@ class MJPEGStreamer {
 
                     this->writeBuff(new_socket, init_res_str.c_str(), init_res_str.size());
 
-                    std::unique_lock<std::mutex> lock(this->clients_mutex_);
+                    std::unique_lock<std::shared_mutex> lock(this->clients_mutex_);
                     this->path2clients_[req.target()].push_back(new_socket);
                 }
             }

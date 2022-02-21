@@ -9,5 +9,7 @@ installation/
 !.vscode/extensions.json
 *.code-workspace
 .history/
-
+.idea/**
+cmake-build-*/
+.clangd/**
 .DS_Store

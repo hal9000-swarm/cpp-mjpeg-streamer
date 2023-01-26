@@ -28,17 +28,19 @@ SOFTWARE.
 #pragma once
 
 #include <netinet/in.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <csignal>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
-#include <shared_mutex>
 #include <queue>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -47,7 +49,6 @@ SOFTWARE.
 #include <vector>
 
 // #include <nadjieb/detail/version.hpp>
-
 
 /// The major version number
 #define NADJIEB_MJPEG_STREAMER_VERSION_MAJOR 2
@@ -59,13 +60,14 @@ SOFTWARE.
 #define NADJIEB_MJPEG_STREAMER_VERSION_PATCH 0
 
 /// The complete version number
-#define NADJIEB_MJPEG_STREAMER_VERSION_CODE (NADJIEB_MJPEG_STREAMER_VERSION_MAJOR * 10000 + NADJIEB_MJPEG_STREAMER_VERSION_MINOR * 100 + NADJIEB_MJPEG_STREAMER_VERSION_PATCH)
+#define NADJIEB_MJPEG_STREAMER_VERSION_CODE                                                    \
+    (NADJIEB_MJPEG_STREAMER_VERSION_MAJOR * 10000 + NADJIEB_MJPEG_STREAMER_VERSION_MINOR * 100 \
+     + NADJIEB_MJPEG_STREAMER_VERSION_PATCH)
 
 /// Version number as string
 #define NADJIEB_MJPEG_STREAMER_VERSION_STRING "2.0.0"
 
 // #include <nadjieb/detail/http_message.hpp>
-
 
 #include <sstream>
 #include <string>
@@ -129,19 +131,23 @@ struct HTTPMessage {
 };
 }  // namespace nadjieb
 
-
-
 namespace nadjieb {
 constexpr int NUM_SEND_MUTICES = 100;
 class MJPEGStreamer {
    public:
-    MJPEGStreamer() = default;
     virtual ~MJPEGStreamer() { stop(); }
 
     MJPEGStreamer(MJPEGStreamer&&) = delete;
     MJPEGStreamer(const MJPEGStreamer&) = delete;
     MJPEGStreamer& operator=(MJPEGStreamer&&) = delete;
     MJPEGStreamer& operator=(const MJPEGStreamer&) = delete;
+
+    MJPEGStreamer() {
+        rlimit limits;
+        getrlimit(RLIMIT_NOFILE, &limits);
+        accept_socket_start_ = limits.rlim_max - 1;
+        accept_socket_current_ = accept_socket_start_;
+    }
 
     void start(int port, int num_workers = 1) {
         ::signal(SIGPIPE, SIG_IGN);
@@ -238,6 +244,9 @@ class MJPEGStreamer {
     };
 
     int master_socket_ = -1;
+    int accept_socket_start_ = -1;
+    int accept_socket_max_ = 64;
+    std::atomic_int32_t accept_socket_current_ = -1;
     struct sockaddr_in address_;
     std::string shutdown_target_ = "/shutdown";
 
@@ -339,6 +348,14 @@ class MJPEGStreamer {
                         this->master_socket_, reinterpret_cast<struct sockaddr*>(&(this->address_)),
                         reinterpret_cast<socklen_t*>(&addrlen));
                     this->panicIfUnexpected(new_socket < 0, "ERROR: accept\n");
+                    auto remapped = --this->accept_socket_current_;
+                    this->panicIfUnexpected(
+                        dup2(new_socket, remapped) < 0, "ERROR: remap socket\n");
+                    if (remapped < this->accept_socket_start_ - this->accept_socket_max_) {
+                        this->accept_socket_current_ = this->accept_socket_max_;
+                    }
+                    ::close(new_socket);
+                    new_socket = remapped;
 
                     std::string buff(4096, 0);
                     this->readBuff(new_socket, &buff[0], buff.size());
